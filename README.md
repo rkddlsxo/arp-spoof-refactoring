@@ -7,7 +7,8 @@
 - 기존 로직은 유지
 - `main()`은 전체 흐름이 보이는 인덱스 형태로 구성
 - 패킷 구조체와 네트워크 동작을 역할별로 분리
-- 이후 `Flow` 기반 구조로 확장 가능하게 정리
+- `Flow` 단위로 sender / target 관계를 관리
+- 이후 유지보수와 테스트가 쉬운 구조로 정리
 
 ## 코드 컨벤션
 
@@ -41,7 +42,7 @@
   - 패킷 구조체이므로 내부 필드는 `network byte order`
   - `uint16_t` 필드는 getter에서 `ntohs()`로 해석
 
-## 현재 진행 상황
+## 현재 구현 상태
 
 완료한 항목
 
@@ -50,31 +51,37 @@
 - `EthernetHeader` 분리
 - `ArpHeader` 분리
 - `ArpPacket` 구조 정의
-- `Flow` 구조 초안 추가
+- `Flow` 구조 정의
 - `pch` 구성 정리
-- ARP 요청/응답 관련 기본 함수 분리 시작
+- ARP request / reply 생성 로직 분리
+- sender / target MAC 해석 로직 분리
+- 감염 패킷 전송 로직 분리
+- relay loop 기본 구조 구현
+- ARP 패킷 감지 후 재감염 기본 처리 추가
 
-현재 구현된 함수
+## 프로그램 흐름
 
-- `openCaptureHandle()`
-- `getMyMacAddress()`
-- `getMyIpAddress()`
-- `makeArpRequestPacket()`
-- `sendArpRequest()`
-- `receiveArpReply()`
-- `resolveMacAddress()`
+```text
+parse arguments
+    ->
+parse flows
+    ->
+open capture handle
+    ->
+get my mac / ip
+    ->
+resolve sender / target mac addresses
+    ->
+send arp infection packets
+    ->
+relay ipv4 packets
+    ->
+reinfect when arp packets are observed
+```
 
-## 다음 작업
+## 메인 워크플로우
 
-- `usage()` 및 인자 검사 정리
-- `argv`를 `Flow` 목록으로 변환하는 함수 추가
-- `main()`을 흐름 중심으로 재구성
-- ARP infection packet 생성 함수 추가
-- 감염 루프 / relay 루프 분리
-
-## 현재 방향
-
-최종적으로 `main()`은 아래처럼 읽히는 구조를 목표로 합니다.
+최종적으로 `main()`은 아래 흐름으로 동작합니다.
 
 ```cpp
 int main(int argc, char* argv[])
@@ -89,9 +96,96 @@ int main(int argc, char* argv[])
     IpAddress myIp = getMyIpAddress(interfaceName);
 
     resolveFlowMacAddresses(handle, myMac, myIp, flows);
-    infectFlows(handle, myMac, myIp, flows);
+    infectFlows(handle, myMac, flows);
     relayLoop(handle, myMac, flows);
 
     pcap_close(handle);
     return 0;
 }
+```
+
+## 함수 설명
+
+### 초기화 / 환경 준비
+
+- `usage()`
+  - 프로그램 사용법 출력
+
+- `openCaptureHandle()`
+  - 지정한 인터페이스로 `pcap` 캡처 핸들 생성
+
+- `getMyMacAddress()`
+  - 현재 인터페이스의 MAC 주소 조회
+
+- `getMyIpAddress()`
+  - 현재 인터페이스의 IP 주소 조회
+
+### 흐름 구성
+
+- `parseFlows()`
+  - 명령행 인자를 `Flow` 목록으로 변환
+  - 입력 형식: `<sender ip> <target ip>` 쌍 반복
+
+- `resolveFlowMacAddresses()`
+  - 각 `Flow`의 `senderMac`, `targetMac` 채움
+
+### ARP 해석
+
+- `makeArpRequestPacket()`
+  - ARP request 패킷 생성
+
+- `sendArpRequest()`
+  - ARP request 전송
+
+- `receiveArpReply()`
+  - 대상 IP의 ARP reply를 기다렸다가 MAC 주소 반환
+
+- `resolveMacAddress()`
+  - request 생성 / 전송 / reply 수신을 묶어 IP로 MAC 주소 조회
+
+### 감염
+
+- `makeArpReplyPacket()`
+  - sender를 속이기 위한 forged ARP reply 생성
+
+- `infectFlow()`
+  - 하나의 `Flow`에 대해 감염 패킷 전송
+
+- `infectFlows()`
+  - 모든 `Flow`에 대해 감염 수행
+
+### 릴레이 / 유지
+
+- `isFromSenderToTarget()`
+  - 수신 패킷이 sender에서 온 것인지 판별
+
+- `isFromTargetToSender()`
+  - 수신 패킷이 target에서 온 것인지 판별
+
+- `relayPacket()`
+  - 목적지 MAC을 바꿔 패킷 재전송
+
+- `handleArpPacket()`
+  - ARP 패킷 감지 시 재감염 처리
+
+- `relayLoop()`
+  - IPv4 패킷 릴레이와 ARP 기반 재감염을 반복 수행
+
+## 실행 예시
+
+단방향 흐름:
+
+```bash
+arp-spoof wlan0 192.168.0.10 192.168.0.1
+```
+
+양방향 흐름:
+
+```bash
+arp-spoof wlan0 192.168.0.10 192.168.0.1 192.168.0.1 192.168.0.10
+```
+
+## 현재 한계 / 메모
+
+- 현재 양방향 감염은 `A B B A` 형태로 인자를 두 쌍 넣어 처리
+- `MacAddress` 비교 연산자 등 일부 정리 작업은 이후 리팩토링 대상
