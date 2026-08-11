@@ -1,0 +1,9 @@
+.vs/
+out/
+build/
+CMakeFiles/
+CMakeCache.txt
+cmake-build-*/
+*.user
+*.sln
+*.vcxproj*
