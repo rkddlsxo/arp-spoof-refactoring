@@ -59,9 +59,7 @@ pcap_t* openCaptureHandle(const char* interfaceName)
 	pcap_t* handle = pcap_open_live(interfaceName, BUFSIZ, 1, 1, errorBuffer);
 	
 	if (handle == nullptr)
-	{
 		throw runtime_error(errorBuffer);
-	}
 
 	return handle;
 }
@@ -69,9 +67,7 @@ pcap_t* openCaptureHandle(const char* interfaceName)
 MacAddress getMyMacAddress(const char* interfaceName) {
 	int socketDescriptor = socket(AF_INET, SOCK_DGRAM, 0);
 	if (socketDescriptor < 0)
-	{
 		throw runtime_error("socket() failed");
-	}
 
 	struct ifreq interfaceRequest {};
 	strncpy(interfaceRequest.ifr_name, interfaceName, IFNAMSIZ - 1);
@@ -91,9 +87,7 @@ IpAddress getMyIpAddress(const char* interfaceName)
 {
 	int socketDescriptor = socket(AF_INET, SOCK_DGRAM, 0);
 	if (socketDescriptor < 0)
-	{
 		throw runtime_error("socket() failed");
-	}
 
 	struct ifreq interfaceRequest {};
 	strncpy(interfaceRequest.ifr_name, interfaceName, IFNAMSIZ - 1);
@@ -141,9 +135,7 @@ void sendArpRequest(pcap_t* handle, const ArpPacket& packet)
 	const int result = pcap_sendpacket(handle, reinterpret_cast<const u_char*>(&packet), ArpPacket::kSize);
 
 	if (result != 0)
-	{
 		throw runtime_error(pcap_geterr(handle));
-	}
 }
 
 MacAddress receiveArpReply(pcap_t* handle, const IpAddress& targetIp)
@@ -257,7 +249,7 @@ bool isFromSenderToTarget(const EthernetHeader& ethernetHeader, const Flow& flow
 			flow.senderMac.macAddress,MacAddress::kSize) == 0;
 }
 
-bool isFromTargetToSender(const EthernetHeader& ethernetHeader, const Flow& flow
+bool isFromTargetToSender(const EthernetHeader& ethernetHeader, const Flow& flow)
 {
 	return 
 		memcmp(ethernetHeader.sourceMac.macAddress,
