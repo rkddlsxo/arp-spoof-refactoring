@@ -35,9 +35,9 @@ void infectFlows(pcap_t* handle, const MacAddress& myMac, const vector<Flow>& fl
 ////////////////////// relayLoop part ////////////////////////////////////
 
 bool isFromSenderToTarget(const EthernetHeader& ethernetHeader, const Flow& flow);
-bool isFromTargetToSender(const EthernetHeader& ethernetHeader, const Flow& flow);
 
-void relayPacket(pcap_t* handle, const u_char* packetData, uint32_t packetLength, const MacAddress& destinationMac);
+
+void relayPacket(pcap_t* handle, const u_char* packetData, uint32_t packetLength, const MacAddress& sourceMac, const MacAddress& destinationMac);
 void relayLoop(pcap_t* handle, const MacAddress& myMac, const vector<Flow>& flows);
 
 ////////////////////////// reinfect //////////////////
@@ -249,24 +249,20 @@ bool isFromSenderToTarget(const EthernetHeader& ethernetHeader, const Flow& flow
 			flow.senderMac.macAddress,MacAddress::kSize) == 0;
 }
 
-bool isFromTargetToSender(const EthernetHeader& ethernetHeader, const Flow& flow)
+
+
+void relayPacket(pcap_t* handle, const u_char* packetData, uint32_t packetLength, const MacAddress& sourceMac, const MacAddress& destinationMac)
 {
-	return 
-		memcmp(ethernetHeader.sourceMac.macAddress,
-			flow.targetMac.macAddress,MacAddress::kSize) == 0;
-}
+    u_char relayData[65536]{};
+    memcpy(relayData, packetData, packetLength);
 
-void relayPacket(pcap_t* handle, const u_char* packetData, uint32_t packetLength, const MacAddress& destinationMac)
-{
-	u_char relayData[65536]{};
-	memcpy(relayData, packetData, packetLength);
+    EthernetHeader* ethernetHeader = reinterpret_cast<EthernetHeader*>(relayData);
+    ethernetHeader->sourceMac = sourceMac;
+    ethernetHeader->destinationMac = destinationMac;
 
-	EthernetHeader* ethernetHeader = reinterpret_cast<EthernetHeader*>(relayData);
-	ethernetHeader->destinationMac = destinationMac;
-
-	const int result = pcap_sendpacket(handle, relayData, packetLength);
-	if (result != 0)
-		throw runtime_error(pcap_geterr(handle));
+    const int result = pcap_sendpacket(handle, relayData, packetLength);
+    if (result != 0)
+        throw runtime_error(pcap_geterr(handle));
 }
 
 void handleArpPacket(pcap_t* handle, const MacAddress& myMac, const vector<Flow>& flows, const u_char* packetData)
@@ -279,12 +275,6 @@ void handleArpPacket(pcap_t* handle, const MacAddress& myMac, const vector<Flow>
 	for (const Flow& flow : flows)
 	{
 		if (packet->arpHeader.getSourceIp().ipAddress == flow.senderIp.ipAddress)
-		{
-			infectFlow(handle, myMac, flow);
-			return;
-		}
-
-		if (packet->arpHeader.getSourceIp().ipAddress == flow.targetIp.ipAddress)
 		{
 			infectFlow(handle, myMac, flow);
 			return;
@@ -330,14 +320,8 @@ void relayLoop(pcap_t* handle, const MacAddress& myMac, const vector<Flow>& flow
 		{
 			if (isFromSenderToTarget(*ethernetHeader, flow)) // case1 sender
 			{
-				relayPacket(handle, packetData, header->caplen, flow.targetMac);
+                relayPacket(handle, packetData, header->caplen, myMac, flow.targetMac);
 				break;
-			}
-
-			if (isFromTargetToSender(*ethernetHeader, flow)) // case2 target
-			{
-				relayPacket(handle, packetData, header->caplen, flow.senderMac);
-				break; 
 			}
 		}
 	}
